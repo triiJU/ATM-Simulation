@@ -1,0 +1,62 @@
+from dataclasses import dataclass, field
+from typing import Literal, List, Optional
+
+from .models import Card
+from .manager import AccessManager
+from .exceptions import (
+    DoesNotExist,
+    BankdataUpdateFailed,
+    CardLimitExceeded,
+    WithdrawExceeded,
+)
+
+
+@dataclass(frozen=True)
+class MachineConfig:
+    banks_served: List[str] = field(default_factory=lambda: ["SBI", "ICICI"])
+
+
+class Machine:
+    def __init__(self, banks_served: Optional[List] = None) -> None:
+        self.banks_served = banks_served or MachineConfig().banks_served
+        self.__manager = AccessManager(self.banks_served)
+
+    @property
+    def get_manager(self) -> AccessManager:
+        return self.__manager
+
+    def create_transaction(
+        self,
+        card: Card,
+        transaction_amount: int,
+        transaction_type: Literal["deposit", "withdraw"],
+        *,
+        update_bankdata: bool = True,
+    ) -> None:
+        if transaction_amount > card.transaction_limit:
+            raise CardLimitExceeded(card.transaction_limit)
+        vault = self.__manager.retrieve_vault(card)
+        if transaction_type == "deposit":
+            vault.balance += transaction_amount
+        elif transaction_type == "withdraw":
+            if vault.balance < transaction_amount:
+                raise WithdrawExceeded((vault.balance, transaction_amount))
+            vault.balance -= transaction_amount
+        else:
+            raise DoesNotExist(
+                transaction_type, message="Transaction-type:{0} does not exist!"
+            )
+        if update_bankdata:
+            try:
+                self.__manager.push_bankdata_updates()
+            except Exception:
+                reversion_transaction_type = (
+                    "deposit" if (transaction_type == "withdraw") else "withdraw"
+                )
+                self.create_transaction(
+                    card,
+                    transaction_amount,
+                    reversion_transaction_type,
+                    update_bankdata=False,
+                )
+                raise BankdataUpdateFailed(reverted=True)
