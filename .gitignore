@@ -1,0 +1,5 @@
+# local file ignores
+.ruff_cache
+.venv
+__pycache__
+databases
